@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Primary Simulation Vote Counter</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; max-width: 780px; margin: 0 auto; padding: 16px; color: #222; }
+  h1 { font-size: 1.4rem; margin: 0 0 12px; }
+  button { font: inherit; cursor: pointer; touch-action: manipulation; }
+  .tabs { display: flex; gap: 6px; }
+  .tabs button { flex: 1; padding: 10px; border: 1px solid #999; border-radius: 6px; background: #f3f3f3; }
+  .tabs button.active { background: #222; color: #fff; border-color: #222; }
+  #rule { margin: 12px 0; color: #555; }
+  .row { position: relative; display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 6px; border: 2px solid #ddd; border-radius: 8px; overflow: hidden; }
+  .row > * { position: relative; }
+  .row .bar { position: absolute; left: 0; top: 0; bottom: 0; opacity: .15; }
+  .row.win { border-color: #222; }
+  .row.tie { border-color: #222; border-style: dashed; }
+  .row.out { opacity: .45; }
+  .row.out .name { text-decoration: line-through; }
+  .info { flex: 1; min-width: 0; }
+  .name { font-weight: 600; }
+  .tag { font-size: .85rem; }
+  .badge { font-size: .75rem; font-weight: 700; background: #222; color: #fff; padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+  .count { font-size: 1.6rem; font-weight: 700; width: 2.2em; text-align: right; }
+  .pct { width: 3em; text-align: right; color: #555; font-size: .9rem; }
+  .step { width: 44px; height: 44px; font-size: 1.4rem; border: 1px solid #999; border-radius: 8px; background: #fff; }
+  .step:disabled { opacity: .3; cursor: default; }
+  .drop { font-size: .8rem; padding: 4px 6px; border: 1px solid #999; border-radius: 6px; background: #fff; }
+  #summary { margin: 14px 0; padding: 10px; background: #f3f3f3; border-radius: 8px; font-size: 1.05rem; line-height: 1.5; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .controls label { margin-right: auto; }
+  .controls button { padding: 8px 12px; border: 1px solid #999; border-radius: 6px; background: #fff; }
+</style>
+</head>
+<body>
+
+<h1>Primary Simulation Vote Counter</h1>
+<div class="tabs" id="tabs"></div>
+<p id="rule"></p>
+<div id="rows"></div>
+<div id="summary"></div>
+<div class="controls">
+  <label><input type="checkbox" id="hide"> Hide progressive/moderate labels</label>
+  <button id="resetRound">Reset this round</button>
+  <button id="resetAll">Reset all rounds</button>
+</div>
+
+<script>
+// ---- Edit candidates here ----
+const PARTIES = {
+  D: { label: "Democrat",   color: "#1f5fbf" },
+  R: { label: "Republican", color: "#c62828" },
+  G: { label: "Green",      color: "#2e7d32" }
+};
+const CANDIDATES = [
+  { name: "Maya Okafor",        party: "D", lane: "progressive" },
+  { name: "Daniel Castellanos", party: "D", lane: "progressive" },
+  { name: "Priya Raman",        party: "D", lane: "moderate" },
+  { name: "Tom Whitfield",      party: "D", lane: "moderate" },
+  { name: "Rick Brannigan",     party: "R", lane: "conservative" },
+  { name: "Karen Lindqvist",    party: "R", lane: "moderate" },
+  { name: "Sam Nakashima",      party: "G", lane: "" }
+];
+const ROUNDS = [
+  { tab: "1: Closed primary", mode: "closed",
+    rule: "Voters choose only within their own party. No-party-preference voters sit out. Each party's top candidate advances." },
+  { tab: "2: Top-two", mode: "top2",
+    rule: "Everyone votes on one ballot. The top two advance, regardless of party." },
+  { tab: "3: Strategy", mode: "top2", dropouts: true,
+    rule: "After caucusing, revote under top-two rules. Mark any candidates who dropped out." }
+];
+// ------------------------------
+
+const KEY = "primary-sim-v1";
+const $ = id => document.getElementById(id);
+const zeros = () => CANDIDATES.map(() => 0);
+
+function blank() {
+  return { round: 0, hide: false, votes: ROUNDS.map(zeros), out: CANDIDATES.map(() => false) };
+}
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && s.votes.length === ROUNDS.length && s.votes[0].length === CANDIDATES.length) return s;
+  } catch (e) {}
+  return blank();
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+}
+let state = load();
+
+// Returns { candidateIndex: "win" | "tie" }
+function results(mode, votes, isOut) {
+  const live = CANDIDATES.map((_, i) => i).filter(i => !isOut(i) && votes[i] > 0);
+  const status = {};
+  const pick = (group, seats) => {
+    if (!group.length) return;
+    const sorted = group.slice().sort((a, b) => votes[b] - votes[a]);
+    const cutoff = votes[sorted[Math.min(seats, sorted.length) - 1]];
+    const tied = sorted.filter(i => votes[i] >= cutoff).length > seats;
+    sorted.forEach(i => {
+      if (votes[i] > cutoff) status[i] = "win";
+      else if (votes[i] === cutoff) status[i] = tied ? "tie" : "win";
+    });
+  };
+  if (mode === "closed") {
+    Object.keys(PARTIES).forEach(p => pick(live.filter(i => CANDIDATES[i].party === p), 1));
+  } else {
+    pick(live, 2);
+  }
+  return status;
+}
+
+function render() {
+  const r = ROUNDS[state.round];
+  const votes = state.votes[state.round];
+  const isOut = i => !!r.dropouts && state.out[i];
+  const total = votes.reduce((sum, v, i) => sum + (isOut(i) ? 0 : v), 0);
+  const status = results(r.mode, votes, isOut);
+
+  $("tabs").innerHTML = ROUNDS.map((x, i) =>
+    `<button data-round="${i}" class="${i === state.round ? "active" : ""}">${x.tab}</button>`).join("");
+  $("rule").textContent = r.rule;
+  $("hide").checked = state.hide;
+
+  $("rows").innerHTML = CANDIDATES.map((c, i) => {
+    const p = PARTIES[c.party], out = isOut(i), st = status[i] || "";
+    const pct = total && !out ? Math.round(votes[i] / total * 100) : 0;
+    const lane = c.lane && !state.hide ? ", " + c.lane : "";
+    const badge = st === "win" ? '<span class="badge">ADVANCES</span>'
+                : st === "tie" ? '<span class="badge">TIED</span>' : "";
+    return `<div class="row ${st} ${out ? "out" : ""}">
+      <div class="bar" style="width:${pct}%;background:${p.color}"></div>
+      <div class="info">
+        <span class="name">${c.name}</span>${badge}
+        <div class="tag" style="color:${p.color}">${p.label}${lane}</div>
+      </div>
+      ${r.dropouts ? `<button class="drop" data-drop="${i}">${out ? "Rejoin" : "Drop out"}</button>` : ""}
+      <button class="step" data-i="${i}" data-d="-1" ${out || !votes[i] ? "disabled" : ""}>−</button>
+      <div class="count">${out ? "–" : votes[i]}</div>
+      <div class="pct">${out ? "" : pct + "%"}</div>
+      <button class="step" data-i="${i}" data-d="1" ${out ? "disabled" : ""}>+</button>
+    </div>`;
+  }).join("");
+
+  const list = kind => Object.keys(status).filter(i => status[i] === kind).map(Number);
+  const names = arr => arr.map(i => `${CANDIDATES[i].name} (${CANDIDATES[i].party})`).join(", ");
+  const wins = list("win"), ties = list("tie");
+  let msg = "No votes yet.";
+  if (total) {
+    msg = `<b>Total votes:</b> ${total}`;
+    if (wins.length) msg += `<br><b>Advancing:</b> ${names(wins)}`;
+    if (ties.length) msg += `<br><b>Tied (revote or coin flip):</b> ${names(ties)}`;
+    if (r.mode === "top2" && wins.length === 2 && !ties.length &&
+        CANDIDATES[wins[0]].party === CANDIDATES[wins[1]].party) {
+      msg += `<br><b>Same-party runoff:</b> two ${PARTIES[CANDIDATES[wins[0]].party].label}s advance.`;
+    }
+  }
+  $("summary").innerHTML = msg;
+}
+
+document.addEventListener("click", e => {
+  const t = e.target.closest("button");
+  if (!t) return;
+  if (t.dataset.round !== undefined) {
+    state.round = +t.dataset.round;
+  } else if (t.dataset.d) {
+    const v = state.votes[state.round], i = +t.dataset.i;
+    v[i] = Math.max(0, v[i] + +t.dataset.d);
+  } else if (t.dataset.drop !== undefined) {
+    state.out[+t.dataset.drop] = !state.out[+t.dataset.drop];
+  } else if (t.id === "resetRound") {
+    if (!confirm("Clear this round's votes?")) return;
+    state.votes[state.round] = zeros();
+    if (ROUNDS[state.round].dropouts) state.out = CANDIDATES.map(() => false);
+  } else if (t.id === "resetAll") {
+    if (!confirm("Clear all three rounds?")) return;
+    const hide = state.hide;
+    state = blank();
+    state.hide = hide;
+  } else {
+    return;
+  }
+  save();
+  render();
+});
+
+$("hide").addEventListener("change", e => {
+  state.hide = e.target.checked;
+  save();
+  render();
+});
+
+render();
+</script>
+</body>
+</html>
